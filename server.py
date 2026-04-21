@@ -96,14 +96,38 @@ class HardwareController:
         if detach: self.servo.value = None
 
     def set_servo_smooth_timed(self, target_val, duration):
+        """
+        Perfectly smooth time-based servo glide.
+        Uses real-time calculation to prevent jerks from thread jitter.
+        """
+        if not self.servo:
+            time.sleep(duration)
+            return
+            
         target_val = max(-1.0, min(1.0, target_val))
-        if not self.servo: return
-        start_val, diff = self.current_servo_val, target_val - self.current_servo_val
-        hz = 50; steps = max(1, int(duration * hz)); delay = duration / steps
+        start_val = self.current_servo_val
+        diff = target_val - start_val
+        start_time = time.time()
+        
+        # Engage servo
         self.servo.value = start_val
-        for i in range(1, steps + 1):
-            v = max(-1.0, min(1.0, start_val + diff * (i / steps)))
-            self.current_servo_val = v; self.servo.value = v; time.sleep(delay)
+        
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed >= duration: break
+            
+            # Calculate exact position based on current time
+            v = start_val + diff * (elapsed / duration)
+            v = max(-1.0, min(1.0, v))
+            self.current_servo_val = v
+            self.servo.value = v
+            
+            # High-frequency updates for smoothness
+            time.sleep(0.01) 
+            
+        # Lock final position
+        self.current_servo_val = target_val
+        self.servo.value = target_val
 
 class SocketServer:
     def __init__(self, hw):
@@ -121,17 +145,33 @@ class SocketServer:
         self.hw.set_led(0, 1, 0); log("DOOR", "OPEN (0 deg) - Phase 1: 20s Solid Green", G)
         time.sleep(20)
 
-        # 2. Phase 2 (5s Yellow Glide)
-        log("DOOR", "Phase 2: 5s Yellow - Gliding to 45 deg", Y)
-        threading.Thread(target=self.hw.set_servo_smooth_timed, args=(-0.5, 5.0), daemon=True).start()
-        for _ in range(5): self.hw.set_led(1, 1, 0); self.hw.play_buzzer(0.1); time.sleep(0.9)
+        # --- START 10s UNIFIED GLIDE (0 -> 90 deg) ---
+        log("DOOR", "Unified 10s Closing Glide Started...", Y)
+        # One single background thread for the entire physical movement
+        glide_thread = threading.Thread(
+            target=self.hw.set_servo_smooth_timed, 
+            args=(SERVO_CLOSED, 10.0), 
+            daemon=True
+        )
+        glide_thread.start()
 
-        # 3. Phase 3 (5s Red Flash Glide)
-        log("DOOR", "Phase 3: 5s Red Flash - FINAL WARNING", R)
-        threading.Thread(target=self.hw.set_servo_smooth_timed, args=(SERVO_CLOSED, 5.0), daemon=True).start()
+        # 2. Phase 2: Yellow (5s)
+        log("DOOR", "Phase 2: Yellow Warning", Y)
         for _ in range(5):
-            self.hw.set_led(1, 0, 0); self.hw.play_buzzer(0.05); time.sleep(0.1)
-            self.hw.play_buzzer(0.05); time.sleep(0.1); self.hw.set_led(0, 0, 0); time.sleep(0.75)
+            self.hw.set_led(1, 1, 0)
+            self.hw.play_buzzer(0.1)
+            time.sleep(0.9)
+
+        # 3. Phase 3: Red Alert (5s)
+        log("DOOR", "Phase 3: RED ALERT - Final Warning", R)
+        for i in range(10): # Rapid 0.5s pulses
+            self.hw.set_led(1, 0, 0)
+            self.hw.play_buzzer(0.05)
+            time.sleep(0.15)
+            self.hw.set_led(0, 0, 0)
+            time.sleep(0.3)
+
+        glide_thread.join() # Wait for glide to finish
 
         # 4. Lock
         self.hw.set_led(1, 0, 0); self.hw.set_servo_smooth(SERVO_CLOSED, detach=True)
@@ -167,7 +207,13 @@ class SocketServer:
 
     def start(self):
         print(BANNER); self.server.bind(('0.0.0.0', 5005)); self.server.listen(5)
-        log("NET", "Server listening on 5005...", G); self.hw.set_led(0, 0, 1)
+        log("NET", "Server ready on 5005", G)
+        
+        # Startup melody for hardware self-test
+        for _ in range(3):
+            self.hw.set_led(0, 1, 1); self.hw.play_buzzer(0.05); time.sleep(0.05); self.hw.set_led(0, 0, 0); time.sleep(0.05)
+        
+        self.hw.set_led(0, 0, 1) # IDLE
         try:
             while True:
                 c, a = self.server.accept()
