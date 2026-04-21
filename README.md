@@ -60,7 +60,7 @@ python3 main.py
 1.  **Approach**: Move within **30cm** of the ultrasonic sensor.
 2.  **Detection**: The system will detect your face and enter `VALIDATING` state (Cyan LED).
 3.  **Unlock**: Show a **Closed Fist** gesture and hold it for **1.5 seconds**.
-4.  **Access**: The door will open (Green LED). You have 20 seconds of free passage before the closing sequence begins.
+4.  **Access**: The door will open (Green LED). You have 30 seconds of free passage before the closing sequence begins.
 5.  **Closing**: The system will warn you with Yellow/Red lights and beeps as the door glides shut.
 
 ---
