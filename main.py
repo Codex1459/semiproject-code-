@@ -89,14 +89,27 @@ class AIBrain:
             return None
 
     # --- Gesture ---
-    def is_thumb_up(self, hand_landmarks):
+    def is_fist_closed(self, hand_landmarks):
+        """ Checks if all fingers are curled (Closed Fist) """
         lm = hand_landmarks.landmark
-        thumb_extended = lm[4].y < lm[2].y
-        index_curled   = lm[8].y > lm[5].y
-        middle_curled  = lm[12].y > lm[9].y
-        ring_curled    = lm[16].y > lm[13].y
-        pinky_curled   = lm[20].y > lm[17].y
-        return thumb_extended and index_curled and middle_curled and ring_curled and pinky_curled
+        
+        # Fingers: Tip must be BELOW the PIP joint (curled)
+        fingers = [
+            lm[8].y > lm[6].y,   # Index
+            lm[12].y > lm[10].y, # Middle
+            lm[16].y > lm[16-2].y, # Ring (using -2 for knuckle reference)
+            lm[20].y > lm[18].y  # Pinky
+        ]
+        
+        # Thumb: Tip must be closer to the palm center than the IP joint
+        thumb_curled = lm[4].x > lm[3].x if lm[5].x > lm[17].x else lm[4].x < lm[3].x
+        fingers.append(thumb_curled)
+        
+        # If all fingers are curled, it's a fist
+        return sum(fingers) == 5
+
+        # If all fingers are curled, it's a fist
+        return sum(fingers) == 5
 
     # --- Main Loop ---
     def run(self):
@@ -153,9 +166,9 @@ class AIBrain:
                     if hand_results.multi_hand_landmarks:
                         for hl in hand_results.multi_hand_landmarks:
                             self.mp_drawing.draw_landmarks(frame, hl, self.mp_hands.HAND_CONNECTIONS)
-                            gesture = "THUMB UP" if self.is_thumb_up(hl) else "UNKNOWN HAND"
+                            gesture = "CLOSED FIST" if self.is_fist_closed(hl) else "HAND DETECTED"
 
-                    if gesture == "THUMB UP":
+                    if gesture == "CLOSED FIST":
                         if self.gesture_start_time is None:
                             self.gesture_start_time = time.time()
                         elif time.time() - self.gesture_start_time >= 1.5:
@@ -163,7 +176,7 @@ class AIBrain:
                             self.current_state       = "WAITING_ON_HARDWARE"
                             self.hardware_start_time = time.time()
                             self.gesture_start_time  = None
-                            self.log("ACCESS", "GRANTED [OK] Door opening...", G)
+                            self.log("ACCESS", "GRANTED [OK] Fist detected!", G)
                     else:
                         self.gesture_start_time = None
                         if time.time() - self.validation_start_time > self.TIMEOUT_DURATION:
@@ -225,7 +238,7 @@ class AIBrain:
         elif self.current_state == "VALIDATING":
             t_l = max(0.0, self.TIMEOUT_DURATION - (now - self.validation_start_time))
             fill_alpha(0, 0, w, 60, (0, 60, 100), 0.65)
-            cv2.putText(frame, "SHOW THUMB UP TO UNLOCK", (w//2-180, 38), FN, 0.8, (0, 230, 255), 2)
+            cv2.putText(frame, "SHOW CLOSED FIST TO UNLOCK", (w//2-180, 38), FN, 0.8, (0, 230, 255), 2)
             num = f"{t_l:.1f}s"
             (tw, th), _ = cv2.getTextSize(num, FND, 3.0, 4)
             cv2.putText(frame, num, (w//2-tw//2, h//2+th//2), FND, 3.0, (0, 220, 255) if t_l > 2 else (60, 60, 255), 4)
