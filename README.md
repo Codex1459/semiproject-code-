@@ -1,10 +1,10 @@
-# 🛡️ MIDNIGHT TECHIE: AI Gesture Door Access System
+#  AI Gesture Door Access System
 
 A robust, distributed security system featuring **MediaPipe AI** for computer vision and a **Raspberry Pi** for precision hardware control.
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 -   **Distributed Architecture**: 
     -   **Laptop AI Brain**: Processes 720p video at 30fps using MediaPipe (Hand/Face/Distance).
@@ -12,14 +12,14 @@ A robust, distributed security system featuring **MediaPipe AI** for computer vi
 -   **Conditional AI Cascade**: High-performance logic that only runs heavy AI models when a human is detected within 10-30cm range, saving up to 95% CPU idle load.
 -   **Butter-Smooth Servo**: PWM-driven servo movement at 50Hz for continuous, non-jittery door operation.
 -   **3-Phase Feedback**:
-    -   🟢 **Phase 1**: Door fully open for 20s (Green LED).
-    -   🟡 **Phase 2**: Warning transition — 5s yellow strobe with moderate beeps while door glides to 45°.
-    -   🔴 **Phase 3**: Critical warning — 5s red flashing with urgent double-beeps while door glides to 90°.
+    -    **Phase 1**: Door fully open for 20s (Green LED).
+    -   **Phase 2**: Warning transition — 5s yellow strobe with moderate beeps while door glides to 45°.
+    -   **Phase 3**: Critical warning — 5s red flashing with urgent double-beeps while door glides to 90°.
 -   **Rich HUD Display**: Professional camera overlay with pulsing borders, semi-transparent panels, and massive centered countdown digits.
 
 ---
 
-## 🛠️ Hardware Pinout (BCM)
+##  Hardware Pinout (BCM)
 
 | Component | Pin | Note |
 | :--- | :--- | :--- |
@@ -33,7 +33,7 @@ A robust, distributed security system featuring **MediaPipe AI** for computer vi
 
 ---
 
-## 📦 Installation
+##  Installation
 
 ### 1. Raspberry Pi Setup
 ```bash
@@ -55,7 +55,7 @@ python3 main.py
 
 ---
 
-## 🎮 How to Use
+##  How to Use
 
 1.  **Approach**: Move within **30cm** of the ultrasonic sensor.
 2.  **Detection**: The system will detect your face and enter `VALIDATING` state (Cyan LED).
