@@ -26,12 +26,10 @@ class AIBrain:
         self.current_state = "IDLE"
         self.validation_start_time = 0
         self.gesture_start_time = None
-        self.hardware_start_time = None  # Tracks when door opened
+        self.hardware_start_time = None
         self.TIMEOUT_DURATION = 5.0
-        self.LOCKOUT_DURATION = 60.0
-        self.DOOR_OPEN_DURATION = 30.0  # Total door open time (must match server.py)
-        self.DOOR_WARNING_SECS = 10.0   # Last N seconds show closing warning
-        self.lockout_end_time = 0
+        self.DOOR_OPEN_DURATION = 30.0
+        self.DOOR_WARNING_SECS = 10.0
         self.last_ping = 0
         self.dist_val = -1.0
 
@@ -99,12 +97,7 @@ class AIBrain:
                 resp = self.send_command("GET_DIST")
                 self.last_ping = time.time()
                 if resp:
-                    if resp == "LOCKED":
-                        if self.current_state != "LOCKED":
-                            # First time we hear LOCKED — record when lockout expires
-                            self.lockout_end_time = time.time() + self.LOCKOUT_DURATION
-                        self.current_state = "LOCKED"
-                    elif resp != "BUSY":
+                    if resp != "BUSY":
                         try:
                             self.dist_val = float(resp)
                         except ValueError:
@@ -113,12 +106,8 @@ class AIBrain:
             face_detected = False
             gesture = "None"
 
-            if self.current_state == "LOCKED":
-                if resp and resp != "LOCKED":
-                    self.current_state = "IDLE"
-            
             # 2. Face Detection (Medium CPU) - ONLY run if someone is near
-            elif 10.0 <= self.dist_val <= 30.0:
+            if 10.0 <= self.dist_val <= 30.0:
                 face_results = self.face_detection.process(rgb_frame)
                 if face_results.detections:
                     face_detected = True
@@ -153,13 +142,13 @@ class AIBrain:
                             self.gesture_start_time = None
                             print("ACCESS GRANTED.")
                     else:
-                        self.gesture_start_time = None # Reset holding timer
+                        self.gesture_start_time = None
                         
-                        # Handle Timeout
+                        # On timeout: go straight back to IDLE (no lockout)
                         if time.time() - self.validation_start_time > self.TIMEOUT_DURATION:
                             self.send_command("ACTION:DENIED")
-                            self.current_state = "LOCKED"
-                            print("ACCESS DENIED: Gesture validity timeout.")
+                            self.current_state = "IDLE"
+                            print("ACCESS DENIED: Returning to IDLE.")
             else:
                 # User stepped out of range
                 if self.current_state == "VALIDATING":
@@ -183,19 +172,11 @@ class AIBrain:
 
             now = time.time()
 
-            # --- LOCKED: Countdown until they can retry ---
-            if self.current_state == "LOCKED":
-                remaining = max(0.0, self.lockout_end_time - now)
-                countdown_text = f"LOCKED  Retry in {int(remaining)+1}s"
-                # Red banner across the top
+            # --- ACCESS DENIED flash: brief red banner ---
+            if self.current_state == "IDLE" and hasattr(self, '_denied_flash_until') and now < self._denied_flash_until:
                 cv2.rectangle(frame, (0, 0), (w, 50), (0, 0, 180), -1)
-                cv2.putText(frame, countdown_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-                # Countdown progress bar (drains left-to-right)
-                bar_w = int(w * (remaining / self.LOCKOUT_DURATION))
-                cv2.rectangle(frame, (0, 50), (w, 58), (40, 40, 40), -1)
-                cv2.rectangle(frame, (0, 50), (bar_w, 58), (0, 0, 255), -1)
+                cv2.putText(frame, "ACCESS DENIED — Try Again", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
-            # --- VALIDATING: Show time left to gesture + hold-progress bar ---
             elif self.current_state == "VALIDATING":
                 time_left = max(0.0, self.TIMEOUT_DURATION - (now - self.validation_start_time))
                 timeout_text = f"Show THUMB UP!  {time_left:.1f}s left"

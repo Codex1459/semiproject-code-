@@ -160,7 +160,6 @@ class SocketServer:
         self.hw = hw
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.lockout_until = 0
         self.in_progress = False
 
     def sequence_access_granted(self):
@@ -238,10 +237,10 @@ class SocketServer:
 
     def sequence_access_denied(self):
         self.in_progress = True
-        self.lockout_until = time.time() + 60
-        self.hw.set_led(1, 0, 0) # Red
-        self.hw.play_buzzer(400, 1.5)
-        print("Module LOCKED for 60 seconds.")
+        self.hw.set_led(1, 0, 0)        # Red
+        self.hw.play_buzzer(400, 1.5)   # Error buzz
+        print("[DOOR] Access denied. Returning to IDLE.")
+        self.hw.set_led(0, 0, 1)        # Back to Blue immediately
         self.in_progress = False
 
     def handle_client(self, conn, addr):
@@ -255,11 +254,6 @@ class SocketServer:
                 
                 if msg == 'GET_DIST':
                     conn.sendall(f"{self.hw.get_distance():.2f}\n".encode('utf-8'))
-                    continue
-                
-                if time.time() < self.lockout_until:
-                    self.hw.set_led(1, 0, 0)
-                    conn.sendall(b"LOCKED\n")
                     continue
 
                 if not self.in_progress:
