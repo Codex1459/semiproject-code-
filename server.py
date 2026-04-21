@@ -116,8 +116,8 @@ class HardwareController:
         if self.rgb:
             self.rgb.color = (r, g, b)
 
-    def set_servo_smooth(self, target_val):
-        # Clamp target to safe bounds
+    def set_servo_smooth(self, target_val, detach=True):
+        """Move servo smoothly to target. Set detach=False to keep engaged."""
         target_val = max(-1.0, min(1.0, target_val))
 
         if self.servo is None:
@@ -127,7 +127,8 @@ class HardwareController:
         self.servo.value = self.current_servo_val
         diff = target_val - self.current_servo_val
         if diff == 0:
-            self.servo.value = None
+            if detach:
+                self.servo.value = None
             return
 
         steps = int(abs(diff) / 0.01)
@@ -136,23 +137,50 @@ class HardwareController:
 
         for _ in range(steps):
             self.current_servo_val += step_val
-            # Clamp every step to prevent float drift from exceeding gpiozero bounds
             self.current_servo_val = max(-1.0, min(1.0, self.current_servo_val))
             self.servo.value = self.current_servo_val
             time.sleep(0.03)
 
-        # Force exact target at end to clear any accumulated drift
         self.current_servo_val = target_val
         self.servo.value = self.current_servo_val
         time.sleep(0.05)
-        self.servo.value = None  # Detach to prevent humming
+        if detach:
+            self.servo.value = None  # Detach to prevent humming
 
-    def set_servo_direct(self, val):
-        """Directly set servo position with clamping (used in timed warning phases)."""
-        val = max(-1.0, min(1.0, val))
-        self.current_servo_val = val
-        if self.servo:
+    def set_servo_smooth_timed(self, target_val, duration):
+        """
+        Butter-smooth servo move from current position to target over exactly
+        `duration` seconds. Runs at ~50 updates/second. Does NOT detach on
+        completion — caller is responsible for detaching if needed.
+        """
+        target_val = max(-1.0, min(1.0, target_val))
+
+        if self.servo is None:
+            time.sleep(duration)
+            self.current_servo_val = target_val
+            return
+
+        start_val = self.current_servo_val
+        diff = target_val - start_val
+        if diff == 0:
+            time.sleep(duration)
+            return
+
+        hz = 50                          # Updates per second
+        steps = max(1, int(duration * hz))
+        step_delay = duration / steps
+
+        self.servo.value = start_val     # Engage before starting
+        for i in range(1, steps + 1):
+            val = start_val + diff * (i / steps)
+            val = max(-1.0, min(1.0, val))
+            self.current_servo_val = val
             self.servo.value = val
+            time.sleep(step_delay)
+
+        # Lock in exact target
+        self.current_servo_val = target_val
+        self.servo.value = target_val
 
 
 class SocketServer:
@@ -164,20 +192,19 @@ class SocketServer:
 
     def sequence_access_granted(self):
         self.in_progress = True
-        
+
         # Access granted rising melody
         for f in [(1000, 0.1), (1500, 0.1), (2000, 0.15)]:
             self.hw.play_buzzer(f[0], f[1])
-        
+
         time.sleep(0.2)
-        
-        # --- OPEN DOOR (0 degrees) ---
-        self.hw.set_servo_smooth(SERVO_OPEN)
+
+        # --- OPEN DOOR (0°) ---
+        self.hw.set_servo_smooth(SERVO_OPEN, detach=False)  # Stay engaged
         print("[DOOR] Door is now OPEN (0 degrees).")
 
         # ============================================================
-        # PHASE 1: 0s - 20s  |  GREEN LED  |  Door fully OPEN (0°)
-        # Silent. Door is wide open. User walks through freely.
+        # PHASE 1: 0s–20s | GREEN LED | Door fully OPEN
         # ============================================================
         self.hw.set_led(0, 1, 0)  # Solid Green
         for remaining in range(20, 0, -1):
@@ -185,51 +212,59 @@ class SocketServer:
             time.sleep(1)
 
         # ============================================================
-        # PHASE 2: 20s - 25s  |  YELLOW LED  |  Door closing 0°→45°
-        # Slow beep every second. Door starts closing noticeably.
+        # PHASE 2: 20s–25s | YELLOW | Servo glides 0°→45° in background
         # ============================================================
-        print("[DOOR] ⚠ YELLOW PHASE: 10s left — door starting to close!")
-        for i in range(5):  # 5 seconds: 0°→45° (servo -1.0 → -0.5)
-            remaining_total = 10 - i
-            partial_val = SERVO_OPEN + (i * 0.1)   # -1.0 → -0.5 in 5 steps
-            angle_deg = int((partial_val - SERVO_OPEN) * 90)  # 0° → 45°
-            self.hw.set_servo_direct(partial_val)  # Clamped direct set
+        print("[DOOR] ⚠ YELLOW PHASE: 10s left — door gliding to 45°")
+        # Start butter-smooth servo close in a separate thread
+        phase2_thread = threading.Thread(
+            target=self.hw.set_servo_smooth_timed,
+            args=(-0.5, 5.0),   # SERVO_OPEN (-1.0) → halfway (-0.5) over 5s
+            daemon=True
+        )
+        phase2_thread.start()
 
-            print(f"[DOOR] 🟡 Closing in {remaining_total}s (Door at {angle_deg}°/90°)")
-            self.hw.set_led(1, 1, 0)          # Solid Yellow
-            self.hw.play_buzzer(1200, 0.15)   # Moderate single beep
-            time.sleep(0.85)                  # Rest of the second
+        for remaining in range(5, 0, -1):
+            angle_deg = int((1.0 - abs(self.hw.current_servo_val)) * 90)
+            print(f"[DOOR] 🟡 Closing in {remaining + 5}s (≈{angle_deg}°)")
+            self.hw.set_led(1, 1, 0)           # Yellow
+            self.hw.play_buzzer(1200, 0.15)    # Single moderate beep
+            time.sleep(0.85)
+
+        phase2_thread.join()  # Ensure phase 2 finishes before phase 3
 
         # ============================================================
-        # PHASE 3: 25s - 30s  |  RED FLASHING  |  Door closing 45°→90°
-        # Rapid urgent beeps. Door rapidly closing. Last chance!
+        # PHASE 3: 25s–30s | RED FLASH | Servo glides 45°→90° in background
         # ============================================================
         print("[DOOR] 🔴 RED PHASE: 5s left — GET INSIDE NOW!")
-        for i in range(5):  # 5 seconds: 45°→90° (servo -0.5 → 0.0)
-            remaining_total = 5 - i
-            partial_val = -0.5 + (i * 0.1)   # -0.5 → 0.0 in 5 steps
-            angle_deg = int((partial_val - SERVO_OPEN) * 90)  # 45° → 90°
-            self.hw.set_servo_direct(partial_val)  # Clamped direct set
+        phase3_thread = threading.Thread(
+            target=self.hw.set_servo_smooth_timed,
+            args=(SERVO_CLOSED, 5.0),   # halfway (-0.5) → CLOSED (0.0) over 5s
+            daemon=True
+        )
+        phase3_thread.start()
 
-            print(f"[DOOR] 🔴 CLOSING in {remaining_total}s (Door at {angle_deg}°/90°) — FINAL WARNING!")
-            # Rapid double beep + flashing Red
-            self.hw.set_led(1, 0, 0)          # Red ON
-            self.hw.play_buzzer(1800, 0.08)   # First rapid beep
+        for remaining in range(5, 0, -1):
+            angle_deg = int((1.0 - abs(self.hw.current_servo_val)) * 90)
+            print(f"[DOOR] 🔴 CLOSING in {remaining}s (≈{angle_deg}°) — FINAL WARNING!")
+            self.hw.set_led(1, 0, 0)           # Red ON
+            self.hw.play_buzzer(1800, 0.08)
             time.sleep(0.1)
-            self.hw.play_buzzer(1800, 0.08)   # Second rapid beep
+            self.hw.play_buzzer(1800, 0.08)
             time.sleep(0.1)
-            self.hw.set_led(0, 0, 0)          # Red OFF (flash)
-            time.sleep(0.64)                  # Rest of the second
+            self.hw.set_led(0, 0, 0)           # Red OFF flash
+            time.sleep(0.64)
+
+        phase3_thread.join()  # Ensure fully closed before final step
 
         # ============================================================
-        # CLOSE: Final smooth close to exactly 90°  +  alert sound
+        # FINAL CLOSE: Lock to exact 90° + alert + detach
         # ============================================================
-        print("[DOOR] Closing door now → 90 degrees.")
-        self.hw.set_led(1, 0, 0)  # Solid Red during close
+        print("[DOOR] Closing door → locking at 90°.")
+        self.hw.set_led(1, 0, 0)  # Solid Red
         self.hw.play_slide(start_freq=2000, end_freq=500, duration=0.6)
-        self.hw.set_servo_smooth(SERVO_CLOSED)  # Fully closed at 90°
+        # Final smooth nudge to exact closed position, then detach
+        self.hw.set_servo_smooth(SERVO_CLOSED, detach=True)
 
-        # Reset to Idle
         self.hw.set_led(0, 0, 1)  # Blue — IDLE
         print("[DOOR] Door CLOSED. System IDLE.")
         self.in_progress = False
