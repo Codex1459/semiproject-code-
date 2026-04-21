@@ -161,64 +161,128 @@ class AIBrain:
                         self.current_state = "IDLE"
                         self.hardware_start_time = None
 
-            # ---- DISPLAY OVERLAY ----
+            # ============================================================
+            # DISPLAY OVERLAY — Rich visual feedback
+            # ============================================================
             h, w = frame.shape[:2]
-
-            # Static status lines
-            cv2.putText(frame, f"State: {self.current_state}",    (10, 30),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(frame, f"Dist:  {self.dist_val:.1f} cm", (10, 60),  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(frame, f"Face:  {'Detected' if face_detected else 'None'}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 140, 0) if face_detected else (0, 0, 255), 2)
-            cv2.putText(frame, f"Gesture: {gesture}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if gesture == "THUMB UP" else (0, 0, 255), 2)
-
             now = time.time()
 
-            # --- ACCESS DENIED flash: brief red banner ---
-            if self.current_state == "IDLE" and hasattr(self, '_denied_flash_until') and now < self._denied_flash_until:
-                cv2.rectangle(frame, (0, 0), (w, 50), (0, 0, 180), -1)
-                cv2.putText(frame, "ACCESS DENIED — Try Again", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+            # Helper: semi-transparent filled rectangle
+            def draw_rect_alpha(x1, y1, x2, y2, color, alpha=0.6):
+                sub = frame[y1:y2, x1:x2]
+                colored = sub.copy()
+                colored[:] = color
+                cv2.addWeighted(colored, alpha, sub, 1 - alpha, 0, sub)
+                frame[y1:y2, x1:x2] = sub
 
+            # Helper: pulsing animated border
+            def draw_pulse_border(color, speed=1.0, min_t=3, max_t=10):
+                t = int(abs((now * speed % 1.0) - 0.5) * 2 * (max_t - min_t)) + min_t
+                cv2.rectangle(frame, (0, 0), (w - 1, h - 1), color, t)
+
+            # ---- STATUS HUD — always visible, bottom-left corner ----
+            draw_rect_alpha(0, h - 108, 290, h, (10, 10, 10), 0.55)
+            cv2.putText(frame, f"State:   {self.current_state}", (8, h - 86), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 120), 1)
+            cv2.putText(frame, f"Dist:    {self.dist_val:.1f} cm",  (8, h - 64), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 220, 0), 1)
+            cv2.putText(frame, f"Face:    {'Detected' if face_detected else 'None'}", (8, h - 42), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 200, 255) if face_detected else (80, 80, 80), 1)
+            cv2.putText(frame, f"Gesture: {gesture}", (8, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 60) if gesture == "THUMB UP" else (80, 80, 80), 1)
+
+            # ============================================================
+            # STATE: ACCESS DENIED — brief red flash
+            # ============================================================
+            if self.current_state == "IDLE" and hasattr(self, '_denied_flash_until') and now < self._denied_flash_until:
+                draw_rect_alpha(0, 0, w, 65, (0, 0, 140), 0.75)
+                cv2.putText(frame, "ACCESS DENIED", (w // 2 - 160, 40), cv2.FONT_HERSHEY_DUPLEX, 1.2, (255, 80, 80), 2)
+                cv2.putText(frame, "Try again — show THUMB UP", (w // 2 - 148, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 180, 180), 1)
+                draw_pulse_border((0, 0, 200), speed=3, min_t=4, max_t=12)
+
+            # ============================================================
+            # STATE: VALIDATING — gesture timer + hold arc
+            # ============================================================
             elif self.current_state == "VALIDATING":
                 time_left = max(0.0, self.TIMEOUT_DURATION - (now - self.validation_start_time))
-                timeout_text = f"Show THUMB UP!  {time_left:.1f}s left"
-                cv2.putText(frame, timeout_text, (10, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 220, 255), 2)
 
-                # Timeout bar (drains right-to-left across the bottom)
+                # Top banner
+                draw_rect_alpha(0, 0, w, 60, (0, 60, 100), 0.65)
+                cv2.putText(frame, "SHOW  THUMB UP  TO UNLOCK", (w // 2 - 185, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 230, 255), 2)
+
+                # Large countdown digit in center
+                big_num = f"{time_left:.1f}s"
+                (tw, th), _ = cv2.getTextSize(big_num, cv2.FONT_HERSHEY_DUPLEX, 3.0, 4)
+                draw_rect_alpha(w // 2 - tw // 2 - 18, h // 2 - th - 15, w // 2 + tw // 2 + 18, h // 2 + 22, (0, 30, 50), 0.5)
+                digit_color = (0, 220, 255) if time_left > 2 else (0, 80, 255)
+                cv2.putText(frame, big_num, (w // 2 - tw // 2, h // 2 + th // 2 - 5), cv2.FONT_HERSHEY_DUPLEX, 3.0, digit_color, 4)
+
+                # Timeout bar (bottom strip)
                 bar_w = int(w * (time_left / self.TIMEOUT_DURATION))
-                cv2.rectangle(frame, (0, h - 20), (w, h), (40, 40, 40), -1)
-                cv2.rectangle(frame, (0, h - 20), (bar_w, h), (0, 200, 255), -1)
+                cv2.rectangle(frame, (0, h - 14), (w, h), (20, 20, 20), -1)
+                cv2.rectangle(frame, (0, h - 14), (bar_w, h), (0, 200, 255) if time_left > 2 else (0, 60, 255), -1)
 
-                # Gesture hold-progress bar (fills left-to-right when thumb is up)
+                # Hold-progress bar (second strip, visible when gesture detected)
                 if self.gesture_start_time is not None:
                     hold_pct = min(1.0, (now - self.gesture_start_time) / 1.5)
                     hold_w = int(w * hold_pct)
-                    cv2.rectangle(frame, (0, h - 38), (w, h - 22), (40, 40, 40), -1)
-                    cv2.rectangle(frame, (0, h - 38), (hold_w, h - 22), (0, 255, 0), -1)
-                    cv2.putText(frame, "Hold...", (10, h - 42), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
+                    cv2.rectangle(frame, (0, h - 32), (w, h - 16), (20, 40, 20), -1)
+                    cv2.rectangle(frame, (0, h - 32), (hold_w, h - 16), (0, 255, 60), -1)
+                    cv2.putText(frame, f"HOLD {int(hold_pct * 100)}%", (w // 2 - 40, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 80), 1)
 
-            # --- WAITING_ON_HARDWARE: Door is open, show countdown and closing warning ---
+                draw_pulse_border((0, 180, 255), speed=1.5, min_t=3, max_t=8)
+
+            # ============================================================
+            # STATE: WAITING_ON_HARDWARE — 3-phase door countdown
+            # Phase 1: >10s  → Green
+            # Phase 2: 5-10s → Yellow (door 0°→45°)
+            # Phase 3: 0-5s  → Red flash (door 45°→90°)
+            # ============================================================
             elif self.current_state == "WAITING_ON_HARDWARE":
                 elapsed = now - self.hardware_start_time if self.hardware_start_time else 0
                 time_left = max(0.0, self.DOOR_OPEN_DURATION - elapsed)
-                warning_phase = time_left <= self.DOOR_WARNING_SECS
 
-                # Flash the banner yellow/dark in the last 10 seconds
-                if warning_phase:
-                    flash = int(now * 2) % 2 == 0  # Toggle every 0.5s
-                    banner_color = (0, 165, 255) if flash else (0, 80, 120)
-                    msg = f"WARNING! Door closing in {int(time_left)+1}s  GET INSIDE!"
-                    cv2.rectangle(frame, (0, 0), (w, 55), banner_color, -1)
-                    cv2.putText(frame, msg, (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+                if time_left > 10.0:
+                    # PHASE 1: Green — door fully open
+                    draw_rect_alpha(0, 0, w, 62, (0, 80, 0), 0.65)
+                    cv2.putText(frame, "ACCESS GRANTED  DOOR OPEN", (w // 2 - 185, 36), cv2.FONT_HERSHEY_DUPLEX, 0.95, (80, 255, 100), 2)
+                    cv2.putText(frame, f"Closing in {int(time_left)}s", (w // 2 - 65, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
+                    cv2.rectangle(frame, (0, h - 12), (w, h), (10, 40, 10), -1)
+                    cv2.rectangle(frame, (0, h - 12), (int(w * time_left / self.DOOR_OPEN_DURATION), h), (0, 210, 60), -1)
+                    draw_pulse_border((0, 180, 0), speed=0.8, min_t=3, max_t=7)
+
+                elif time_left > 5.0:
+                    # PHASE 2: Yellow — door slowly closing
+                    flash = int(now * 2) % 2 == 0
+                    draw_rect_alpha(0, 0, w, 62, (0, 90, 120) if flash else (0, 50, 70), 0.75)
+                    cv2.putText(frame, f"CLOSING IN  {int(time_left)}s", (w // 2 - 148, 38), cv2.FONT_HERSHEY_DUPLEX, 1.05, (0, 220, 255), 2)
+                    cv2.putText(frame, "Door is closing — GET INSIDE!", (w // 2 - 162, 57), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 240, 255), 1)
+
+                    big = f"{int(time_left)}"
+                    (tw, th), _ = cv2.getTextSize(big, cv2.FONT_HERSHEY_DUPLEX, 5.0, 7)
+                    draw_rect_alpha(w // 2 - tw // 2 - 20, h // 2 - th - 18, w // 2 + tw // 2 + 20, h // 2 + 26, (0, 40, 60), 0.5)
+                    cv2.putText(frame, big, (w // 2 - tw // 2, h // 2 + th // 2 - 10), cv2.FONT_HERSHEY_DUPLEX, 5.0, (0, 220, 255), 7)
+
+                    cv2.rectangle(frame, (0, h - 12), (w, h), (10, 30, 40), -1)
+                    cv2.rectangle(frame, (0, h - 12), (int(w * time_left / self.DOOR_OPEN_DURATION), h), (0, 180, 220), -1)
+                    draw_pulse_border((0, 200, 255) if flash else (0, 80, 120), speed=2, min_t=4, max_t=10)
+
                 else:
-                    cv2.rectangle(frame, (0, 0), (w, 55), (0, 140, 0), -1)
-                    cv2.putText(frame, f"ACCESS GRANTED  Door open for {int(time_left)}s more", (10, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2)
+                    # PHASE 3: Red — door rapidly closing, FINAL WARNING
+                    flash = int(now * 3) % 2 == 0
+                    draw_rect_alpha(0, 0, w, 62, (0, 0, 150) if flash else (0, 0, 60), 0.82)
+                    warn_color = (100, 100, 255) if flash else (255, 100, 100)
+                    cv2.putText(frame, f"DOOR CLOSING! {int(time_left)+1}s", (w // 2 - 188, 38), cv2.FONT_HERSHEY_DUPLEX, 1.05, warn_color, 2)
+                    cv2.putText(frame, "FINAL WARNING — GET INSIDE NOW!", (w // 2 - 192, 57), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 200, 255), 1)
 
-                # Door-open time remaining bar at the bottom
-                bar_w = int(w * (time_left / self.DOOR_OPEN_DURATION))
-                cv2.rectangle(frame, (0, h - 12), (w, h), (40, 40, 40), -1)
-                bar_color = (0, 60, 255) if warning_phase else (0, 200, 0)
-                cv2.rectangle(frame, (0, h - 12), (bar_w, h), bar_color, -1)
-            
+                    big = f"{int(time_left)+1}"
+                    (tw, th), _ = cv2.getTextSize(big, cv2.FONT_HERSHEY_DUPLEX, 7.0, 10)
+                    draw_rect_alpha(w // 2 - tw // 2 - 22, h // 2 - th - 20, w // 2 + tw // 2 + 22, h // 2 + 32, (40, 0, 0), 0.55)
+                    cv2.putText(frame, big, (w // 2 - tw // 2, h // 2 + th // 2 - 15), cv2.FONT_HERSHEY_DUPLEX, 7.0, warn_color, 10)
+
+                    cv2.rectangle(frame, (0, h - 12), (w, h), (30, 10, 10), -1)
+                    bar_color = (80, 60, 255) if flash else (200, 40, 40)
+                    cv2.rectangle(frame, (0, h - 12), (int(w * time_left / self.DOOR_OPEN_DURATION), h), bar_color, -1)
+                    draw_pulse_border(warn_color, speed=4, min_t=5, max_t=14)
+
             cv2.imshow("MIDNIGHT TECHIE - AI Brain", frame)
+
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
